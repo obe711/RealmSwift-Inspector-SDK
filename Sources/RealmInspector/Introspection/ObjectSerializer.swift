@@ -115,7 +115,16 @@ public final class ObjectSerializer {
 //            return NSNull()
             
         case .object:
-            return serializeLinkedObject(property, from: object, depth: depth)
+            // Check if this is a collection (List, Set, Map) or a single object
+            if property.isArray {
+                return serializeListProperty(property, from: object, depth: depth)
+            } else if property.isSet {
+                return serializeSetProperty(property, from: object, depth: depth)
+            } else if property.isMap {
+                return serializeMapProperty(property, from: object, depth: depth)
+            } else {
+                return serializeLinkedObject(property, from: object, depth: depth)
+            }
             
         case .any:
             if let anyValue = object[property.name] as? AnyRealmValue {
@@ -167,21 +176,25 @@ public final class ObjectSerializer {
         guard let linkedObject = object[property.name] as? DynamicObject else {
             return NSNull()
         }
-        
-        if depth + 1 >= maxDepth {
-            // Return a reference instead of full object
+
+        // Embedded objects should always be fully serialized regardless of depth
+        // because they are part of the parent object's data
+        let isEmbedded = linkedObject.objectSchema.isEmbedded
+
+        if !isEmbedded && depth + 1 >= maxDepth {
+            // Return a reference instead of full object (only for non-embedded objects)
             return createReference(to: linkedObject, typeName: property.objectClassName)
         }
-        
-        return serialize(linkedObject, depth: depth + 1)
+
+        // For embedded objects, don't increment depth to ensure full serialization
+        let nextDepth = isEmbedded ? depth : depth + 1
+        return serialize(linkedObject, depth: nextDepth)
     }
     
     private func serializeLinkingObjects(_ property: Property, from object: DynamicObject, depth: Int) -> Any {
         // LinkingObjects require special handling through the schema
-        guard let linkingObjects = object.dynamicList(property.name) as? Results<DynamicObject> else {
-            return []
-        }
-        
+        let linkingObjects = object.dynamicList(property.name)
+
         let count = linkingObjects.count
         let items = Array(linkingObjects.prefix(maxListItems)).map { linkedObject -> Any in
             if depth + 1 >= maxDepth {
@@ -189,13 +202,61 @@ public final class ObjectSerializer {
             }
             return serialize(linkedObject, depth: depth + 1)
         }
-        
+
         return [
             "_type": "LinkingObjects",
             "_count": count,
             "_items": items,
             "_truncated": count > maxListItems
         ]
+    }
+
+    private func serializeListProperty(_ property: Property, from object: DynamicObject, depth: Int) -> Any {
+        let list = object.dynamicList(property.name)
+
+        // Check if the list contains embedded objects
+        let containsEmbeddedObjects = list.first?.objectSchema.isEmbedded ?? false
+
+        let items = Array(list.prefix(maxListItems)).map { item -> Any in
+            // For embedded objects, don't apply depth limits
+            if containsEmbeddedObjects {
+                return serialize(item, depth: depth)
+            } else if depth + 1 >= maxDepth {
+                return createReference(to: item, typeName: property.objectClassName)
+            } else {
+                return serialize(item, depth: depth + 1)
+            }
+        }
+
+        return items
+    }
+
+    private func serializeSetProperty(_ property: Property, from object: DynamicObject, depth: Int) -> Any {
+        // Sets work similarly to Lists in Realm
+        let set = object.dynamicList(property.name)
+
+        // Check if the set contains embedded objects
+        let containsEmbeddedObjects = set.first?.objectSchema.isEmbedded ?? false
+
+        let items = Array(set.prefix(maxListItems)).map { item -> Any in
+            // For embedded objects, don't apply depth limits
+            if containsEmbeddedObjects {
+                return serialize(item, depth: depth)
+            } else if depth + 1 >= maxDepth {
+                return createReference(to: item, typeName: property.objectClassName)
+            } else {
+                return serialize(item, depth: depth + 1)
+            }
+        }
+
+        return items
+    }
+
+    private func serializeMapProperty(_ property: Property, from object: DynamicObject, depth: Int) -> Any {
+        // Maps are accessed differently - they're key-value pairs
+        // For now, return an empty dictionary - this would need specific implementation
+        // based on how Realm exposes dynamic map access
+        return [String: Any]()
     }
     
     private func serializeAnyRealmValue(_ value: AnyRealmValue, depth: Int) -> Any {
