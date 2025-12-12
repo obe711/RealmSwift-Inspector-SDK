@@ -17,7 +17,7 @@ public final class BonjourAdvertiser: NSObject {
     private var listener: NWListener?
     private var netService: NetService?
     
-    private let port: UInt16
+    public let port: UInt16
     private let serviceName: String
     
     public private(set) var isAdvertising = false

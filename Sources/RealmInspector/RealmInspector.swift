@@ -13,9 +13,12 @@ import RealmSwift
 ///
 /// // Or with a specific Realm:
 /// RealmInspector.shared.start(realm: myRealm)
+///
+/// // For USB-only connection:
+/// RealmInspector.shared.start(transportMode: .usbOnly)
 /// ```
 ///
-/// The desktop app will automatically discover your device on the network.
+/// The desktop app will automatically discover your device on the network or USB.
 public final class RealmInspector {
     
     // MARK: - Singleton
@@ -38,8 +41,14 @@ public final class RealmInspector {
         server?.clientCount ?? 0
     }
     
-    /// Port the server is running on
-    public private(set) var port: UInt16 = BonjourAdvertiser.defaultPort
+    /// Network port the server is running on
+    public private(set) var networkPort: UInt16 = BonjourAdvertiser.defaultPort
+    
+    /// USB port the server is running on
+    public private(set) var usbPort: UInt16 = USBTransport.defaultPort
+    
+    /// Current transport mode
+    public private(set) var transportMode: TransportMode = .both
     
     // MARK: - Callbacks
     
@@ -63,22 +72,77 @@ public final class RealmInspector {
     private init() {
         // Check if we should auto-disable in release builds
         #if !DEBUG
-        Logger.log("RealmInspector should only be used in DEBUG builds")
+        Logger.log("⚠️ RealmInspector should only be used in DEBUG builds")
         #endif
     }
     
-    // MARK: - Public API
+    // MARK: - Public API (Legacy/Simple)
+    
+    /// Start the inspector with the default Realm (legacy API)
+    ///
+    /// - Parameter port: Port to listen on (default: 9876)
+    @discardableResult
+    public func start(port: UInt16 = BonjourAdvertiser.defaultPort) -> Bool {
+        return start(networkPort: port, transportMode: .both)
+    }
+    
+    /// Start the inspector with a specific Realm instance (legacy API)
+    ///
+    /// - Parameters:
+    ///   - realm: The Realm instance to inspect
+    ///   - port: Port to listen on (default: 9876)
+    @discardableResult
+    public func start(realm: Realm, port: UInt16 = BonjourAdvertiser.defaultPort) -> Bool {
+        return start(
+            realm: realm,
+            networkPort: port,
+            usbPort: USBTransport.defaultPort,
+            serviceName: nil,
+            transportMode: .both
+        )
+    }
+    
+    /// Start the inspector with a Realm configuration (legacy API)
+    ///
+    /// - Parameters:
+    ///   - configuration: Realm configuration to use
+    ///   - port: Port to listen on (default: 9876)
+    @discardableResult
+    public func start(configuration: Realm.Configuration, port: UInt16 = BonjourAdvertiser.defaultPort) -> Bool {
+        return start(
+            configuration: configuration,
+            networkPort: port,
+            usbPort: USBTransport.defaultPort,
+            serviceName: nil,
+            transportMode: .both
+        )
+    }
+    
+    // MARK: - Public API (Full)
     
     /// Start the inspector with the default Realm
     ///
     /// - Parameters:
-    ///   - port: Port to listen on (default: 9876)
+    ///   - networkPort: Port for network connections (default: 9876)
+    ///   - usbPort: Port for USB connections (default: 9877)
     ///   - serviceName: Custom Bonjour service name (default: device name)
+    ///   - transportMode: Which transports to enable (default: .both)
     @discardableResult
-    public func start(port: UInt16 = BonjourAdvertiser.defaultPort, serviceName: String? = nil) -> Bool {
+    public func start(
+        networkPort: UInt16 = BonjourAdvertiser.defaultPort,
+        usbPort: UInt16 = USBTransport.defaultPort,
+        serviceName: String? = nil,
+        transportMode: TransportMode = .both
+    ) -> Bool {
         do {
             let realm = try Realm()
-            return start(realm: realm, port: port, serviceName: serviceName)
+            return start(
+                realm: realm,
+                networkPort: networkPort,
+                usbPort: usbPort,
+                serviceName: serviceName,
+                transportMode: transportMode
+            )
         } catch {
             Logger.log("Failed to open default Realm: \(error)")
             onError?(error)
@@ -90,27 +154,43 @@ public final class RealmInspector {
     ///
     /// - Parameters:
     ///   - realm: The Realm instance to inspect
-    ///   - port: Port to listen on (default: 9876)
+    ///   - networkPort: Port for network connections (default: 9876)
+    ///   - usbPort: Port for USB connections (default: 9877)
     ///   - serviceName: Custom Bonjour service name (default: device name)
+    ///   - transportMode: Which transports to enable (default: .both)
     @discardableResult
-    public func start(realm: Realm, port: UInt16 = BonjourAdvertiser.defaultPort, serviceName: String? = nil) -> Bool {
+    public func start(
+        realm: Realm,
+        networkPort: UInt16 = BonjourAdvertiser.defaultPort,
+        usbPort: UInt16 = USBTransport.defaultPort,
+        serviceName: String? = nil,
+        transportMode: TransportMode = .both
+    ) -> Bool {
         // Stop any existing server
         stop()
         
         self.realm = realm
-        self.port = port
+        self.networkPort = networkPort
+        self.usbPort = usbPort
+        self.transportMode = transportMode
         
         do {
-            server = InspectorServer(realm: realm, port: port, serviceName: serviceName)
+            server = InspectorServer(
+                realm: realm,
+                networkPort: networkPort,
+                usbPort: usbPort,
+                serviceName: serviceName,
+                transportMode: transportMode
+            )
             setupServerCallbacks()
             try server?.start()
             
-            Logger.log("RealmInspector started on port \(port)")
+            Logger.log("✅ RealmInspector started (mode: \(transportMode))")
             printConnectionInfo()
             
             return true
         } catch {
-            Logger.log("Failed to start RealmInspector: \(error)")
+            Logger.log("❌ Failed to start RealmInspector: \(error)")
             onError?(error)
             return false
         }
@@ -120,13 +200,27 @@ public final class RealmInspector {
     ///
     /// - Parameters:
     ///   - configuration: Realm configuration to use
-    ///   - port: Port to listen on (default: 9876)
+    ///   - networkPort: Port for network connections (default: 9876)
+    ///   - usbPort: Port for USB connections (default: 9877)
     ///   - serviceName: Custom Bonjour service name (default: device name)
+    ///   - transportMode: Which transports to enable (default: .both)
     @discardableResult
-    public func start(configuration: Realm.Configuration, port: UInt16 = BonjourAdvertiser.defaultPort, serviceName: String? = nil) -> Bool {
+    public func start(
+        configuration: Realm.Configuration,
+        networkPort: UInt16 = BonjourAdvertiser.defaultPort,
+        usbPort: UInt16 = USBTransport.defaultPort,
+        serviceName: String? = nil,
+        transportMode: TransportMode = .both
+    ) -> Bool {
         do {
             let realm = try Realm(configuration: configuration)
-            return start(realm: realm, port: port, serviceName: serviceName)
+            return start(
+                realm: realm,
+                networkPort: networkPort,
+                usbPort: usbPort,
+                serviceName: serviceName,
+                transportMode: transportMode
+            )
         } catch {
             Logger.log("Failed to open Realm with configuration: \(error)")
             onError?(error)
@@ -152,9 +246,11 @@ public final class RealmInspector {
             return
         }
         
-        let currentPort = self.port
+        let currentNetworkPort = self.networkPort
+        let currentUsbPort = self.usbPort
+        let currentTransportMode = self.transportMode
         stop()
-        start(realm: realm, port: currentPort)
+        start(realm: realm, networkPort: currentNetworkPort, usbPort: currentUsbPort, transportMode: currentTransportMode)
     }
     
     // MARK: - Private Methods
@@ -169,12 +265,12 @@ public final class RealmInspector {
         }
         
         server?.onClientConnect = { [weak self] clientId in
-            Logger.log("Client connected: \(clientId)")
+            Logger.log("📱 Client connected: \(clientId)")
             self?.onClientConnect?(clientId)
         }
         
         server?.onClientDisconnect = { [weak self] clientId in
-            Logger.log("Client disconnected: \(clientId)")
+            Logger.log("📱 Client disconnected: \(clientId)")
             self?.onClientDisconnect?(clientId)
         }
         
@@ -186,13 +282,22 @@ public final class RealmInspector {
     private func printConnectionInfo() {
         #if os(iOS)
         if let deviceName = UIDevice.current.name.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) {
-            Logger.log("Device: \(deviceName)")
+            Logger.log("📡 Device: \(deviceName)")
         }
         #endif
         
-        Logger.log("Service: \(BonjourAdvertiser.serviceType)")
-        Logger.log("Port: \(port)")
-        Logger.log("Ready for connections from RealmCompass desktop app")
+        Logger.log("📡 Transport Mode: \(transportMode)")
+        
+        if transportMode == .networkOnly || transportMode == .both {
+            Logger.log("📡 Network Service: \(BonjourAdvertiser.serviceType)")
+            Logger.log("📡 Network Port: \(networkPort)")
+        }
+        
+        if transportMode == .usbOnly || transportMode == .both {
+            Logger.log("🔌 USB Port: \(usbPort)")
+        }
+        
+        Logger.log("📡 Ready for connections from RealmCompass desktop app")
     }
 }
 

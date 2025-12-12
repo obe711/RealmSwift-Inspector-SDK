@@ -28,6 +28,22 @@ Or in Xcode: File → Add Package Dependencies → Enter the repository URL.
 
 ### Basic Setup
 
+```swift
+#if DEBUG
+// Both Wi-Fi and USB (default)
+RealmInspector.shared.start()
+
+// USB only (faster, no network needed)
+RealmInspector.shared.start(transportMode: .usbOnly)
+
+// Wi-Fi only
+RealmInspector.shared.start(transportMode: .networkOnly)
+
+// Custom ports
+RealmInspector.shared.start(networkPort: 9876, usbPort: 9877)
+#endif
+```
+
 Add RealmInspector to your app in DEBUG builds only:
 
 ```swift

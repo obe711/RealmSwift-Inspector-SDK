@@ -2,21 +2,48 @@ import Foundation
 import Network
 import RealmSwift
 
+/// Transport mode for the inspector server
+public enum TransportMode: CustomStringConvertible {
+    case networkOnly
+    case usbOnly
+    case both
+    
+    public var description: String {
+        switch self {
+        case .networkOnly: return "Network Only"
+        case .usbOnly: return "USB Only"
+        case .both: return "Network + USB"
+        }
+    }
+}
+
 /// The main server that coordinates connections, request handling, and change notifications
 public final class InspectorServer {
     
     // MARK: - Properties
-    
+
     private let realm: Realm
+    private let realmConfiguration: Realm.Configuration
     private let advertiser: BonjourAdvertiser
+    private let usbTransport: USBTransport
     private let requestHandler: RequestHandler
+    private let transportMode: TransportMode
     
     private var connections: Set<ClientConnection> = []
     private let connectionLock = NSLock()
-    
-    /// Realm notification tokens for live subscriptions
-    private var notificationTokens: [String: NotificationToken] = [:]
-    
+
+    /// Subscription info to keep Realm instances and tokens alive
+    private struct SubscriptionInfo {
+        let realm: Realm
+        let token: NotificationToken
+    }
+
+    /// Active subscriptions with their Realm instances and tokens
+    private var subscriptions: [String: SubscriptionInfo] = [:]
+
+    /// Dedicated queue for Realm operations
+    private let realmQueue = DispatchQueue(label: "com.realminspector.server.realm", qos: .userInitiated)
+
     public private(set) var isRunning = false
     
     /// Called when server starts
@@ -36,12 +63,32 @@ public final class InspectorServer {
     
     // MARK: - Initialization
     
-    public init(realm: Realm, port: UInt16 = BonjourAdvertiser.defaultPort, serviceName: String? = nil) {
+    public init(
+        realm: Realm,
+        networkPort: UInt16 = BonjourAdvertiser.defaultPort,
+        usbPort: UInt16 = USBTransport.defaultPort,
+        serviceName: String? = nil,
+        transportMode: TransportMode = .both
+    ) {
         self.realm = realm
-        self.advertiser = BonjourAdvertiser(port: port, serviceName: serviceName)
+        self.realmConfiguration = realm.configuration
+        self.advertiser = BonjourAdvertiser(port: networkPort, serviceName: serviceName)
+        self.usbTransport = USBTransport(port: usbPort)
         self.requestHandler = RequestHandler(realm: realm)
-        
-        setupAdvertiserCallbacks()
+        self.transportMode = transportMode
+
+        setupCallbacks()
+    }
+    
+    /// Legacy initializer for backward compatibility
+    public convenience init(realm: Realm, port: UInt16 = BonjourAdvertiser.defaultPort, serviceName: String? = nil) {
+        self.init(
+            realm: realm,
+            networkPort: port,
+            usbPort: USBTransport.defaultPort,
+            serviceName: serviceName,
+            transportMode: .networkOnly
+        )
     }
     
     // MARK: - Server Lifecycle
@@ -50,41 +97,57 @@ public final class InspectorServer {
     public func start() throws {
         guard !isRunning else { return }
         
-        try advertiser.startAdvertising()
+        // Start network transport
+        if transportMode == .networkOnly || transportMode == .both {
+            try advertiser.startAdvertising()
+            Logger.log("Network transport started on port \(advertiser.port)")
+        }
+        
+        // Start USB transport
+        if transportMode == .usbOnly || transportMode == .both {
+            try usbTransport.startListening()
+            Logger.log("USB transport started on port \(usbTransport.port)")
+        }
+        
         isRunning = true
         
-        Logger.log("RealmInspector server started")
+        Logger.log("RealmInspector server started (mode: \(transportMode))")
         onStart?()
     }
     
     /// Stop the inspector server
     public func stop() {
         guard isRunning else { return }
-        
+
         // Close all connections
         connectionLock.lock()
         connections.forEach { $0.close() }
         connections.removeAll()
         connectionLock.unlock()
-        
-        // Cancel all subscriptions
-        notificationTokens.values.forEach { $0.invalidate() }
-        notificationTokens.removeAll()
-        
-        // Stop advertising
+
+        // Cancel all subscriptions on the realm queue
+        realmQueue.sync { [weak self] in
+            guard let self = self else { return }
+            self.subscriptions.values.forEach { $0.token.invalidate() }
+            self.subscriptions.removeAll()
+        }
+
+        // Stop transports
         advertiser.stopAdvertising()
-        
+        usbTransport.stopListening()
+
         isRunning = false
-        
+
         Logger.log("RealmInspector server stopped")
         onStop?()
     }
     
     // MARK: - Private Methods
     
-    private func setupAdvertiserCallbacks() {
+    private func setupCallbacks() {
+        // Network transport callbacks
         advertiser.onConnection = { [weak self] connection in
-            self?.handleNewConnection(connection)
+            self?.handleNewConnection(connection, via: "network")
         }
         
         advertiser.onError = { [weak self] error in
@@ -92,13 +155,28 @@ public final class InspectorServer {
         }
         
         advertiser.onStateChange = { [weak self] isAdvertising in
-            if !isAdvertising {
+            if !isAdvertising && self?.transportMode == .networkOnly {
+                self?.isRunning = false
+            }
+        }
+        
+        // USB transport callbacks
+        usbTransport.onConnection = { [weak self] connection in
+            self?.handleNewConnection(connection, via: "USB")
+        }
+        
+        usbTransport.onError = { [weak self] error in
+            self?.onError?(error)
+        }
+        
+        usbTransport.onStateChange = { [weak self] isListening in
+            if !isListening && self?.transportMode == .usbOnly {
                 self?.isRunning = false
             }
         }
     }
     
-    private func handleNewConnection(_ networkConnection: NWConnection) {
+    private func handleNewConnection(_ networkConnection: NWConnection, via transport: String) {
         let client = ClientConnection(connection: networkConnection)
         
         client.onRequest = { [weak self, weak client] request in
@@ -124,6 +202,7 @@ public final class InspectorServer {
         // Start handling
         client.start()
         
+        Logger.log("Client connected via \(transport): \(client.id)")
         onClientConnect?(client.id)
     }
     
@@ -137,6 +216,7 @@ public final class InspectorServer {
             cleanupSubscription(subscriptionId)
         }
         
+        Logger.log("Client disconnected: \(client.id)")
         onClientDisconnect?(client.id)
     }
     
@@ -203,47 +283,61 @@ public final class InspectorServer {
     }
     
     private func setupRealmNotification(subscriptionId: String, typeName: String, filter: String?, client: ClientConnection) {
-        var results = realm.dynamicObjects(typeName)
-        
-        if let filter = filter, !filter.isEmpty {
-            let predicate = NSPredicate(format: filter)
-            results = results.filter(predicate)
-        }
-        
-        let serializer = ObjectSerializer()
-        
-        let token = results.observe { [weak self, weak client] changes in
-            guard let self = self, let client = client else { return }
-            
-            switch changes {
-            case .initial:
-                // Don't send initial state - client can query if needed
-                break
-                
-            case .update(let results, let deletions, let insertions, let modifications):
-                let changeSet = self.buildChangeSet(
-                    results: results,
-                    deletions: deletions,
-                    insertions: insertions,
-                    modifications: modifications,
-                    serializer: serializer
-                )
-                
-                if !changeSet.isEmpty {
-                    let notification = ChangeNotification(
-                        subscriptionId: subscriptionId,
-                        typeName: typeName,
-                        changes: changeSet
+        // Observations must be set up on the main thread (which has a run loop)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            // Create a main-thread Realm instance for observations
+            guard let realm = try? Realm(configuration: self.realmConfiguration) else {
+                Logger.log("Failed to create Realm for subscription")
+                return
+            }
+
+            var results = realm.dynamicObjects(typeName)
+
+            if let filter = filter, !filter.isEmpty {
+                let predicate = NSPredicate(format: filter)
+                results = results.filter(predicate)
+            }
+
+            let serializer = ObjectSerializer()
+            let token = results.observe { [weak self, weak client] changes in
+                guard let self = self, let client = client else { return }
+
+                switch changes {
+                case .initial:
+                    // Don't send initial state - client can query if needed
+                    break
+
+                case .update(let results, let deletions, let insertions, let modifications):
+                    let changeSet = self.buildChangeSet(
+                        results: results,
+                        deletions: deletions,
+                        insertions: insertions,
+                        modifications: modifications,
+                        serializer: serializer
                     )
-                    client.send(notification)
+
+                    if !changeSet.isEmpty {
+                        let notification = ChangeNotification(
+                            subscriptionId: subscriptionId,
+                            typeName: typeName,
+                            changes: changeSet
+                        )
+                        client.send(notification)
+                    }
+
+                case .error(let error):
+                    Logger.log("Subscription error: \(error)")
                 }
-                
-            case .error(let error):
-                Logger.log("Subscription error: \(error)")
+            }
+
+            // Store both the Realm instance and token to keep them alive
+            // Need to do this on realmQueue to ensure thread-safe access to subscriptions dictionary
+            self.realmQueue.async {
+                self.subscriptions[subscriptionId] = SubscriptionInfo(realm: realm, token: token)
             }
         }
-        
-        notificationTokens[subscriptionId] = token
     }
     
     private func buildChangeSet(
@@ -277,8 +371,11 @@ public final class InspectorServer {
     }
     
     private func cleanupSubscription(_ subscriptionId: String) {
-        if let token = notificationTokens.removeValue(forKey: subscriptionId) {
-            token.invalidate()
+        realmQueue.async { [weak self] in
+            guard let self = self else { return }
+            if let subscription = self.subscriptions.removeValue(forKey: subscriptionId) {
+                subscription.token.invalidate()
+            }
         }
     }
     
@@ -293,7 +390,9 @@ public final class InspectorServer {
     
     /// Number of active subscriptions
     public var subscriptionCount: Int {
-        notificationTokens.count
+        realmQueue.sync { [weak self] in
+            self?.subscriptions.count ?? 0
+        }
     }
 }
 
@@ -302,16 +401,35 @@ public final class InspectorServer {
 extension InspectorServer {
     
     /// Create a server with the default Realm
-    public static func withDefaultRealm(port: UInt16 = BonjourAdvertiser.defaultPort) throws -> InspectorServer {
+    public static func withDefaultRealm(
+        networkPort: UInt16 = BonjourAdvertiser.defaultPort,
+        usbPort: UInt16 = USBTransport.defaultPort,
+        transportMode: TransportMode = .both
+    ) throws -> InspectorServer {
         let realm = try Realm()
-        return InspectorServer(realm: realm, port: port)
+        return InspectorServer(
+            realm: realm,
+            networkPort: networkPort,
+            usbPort: usbPort,
+            transportMode: transportMode
+        )
     }
     
     /// Create a server with a Realm at a specific path
-    public static func withRealm(at url: URL, port: UInt16 = BonjourAdvertiser.defaultPort) throws -> InspectorServer {
+    public static func withRealm(
+        at url: URL,
+        networkPort: UInt16 = BonjourAdvertiser.defaultPort,
+        usbPort: UInt16 = USBTransport.defaultPort,
+        transportMode: TransportMode = .both
+    ) throws -> InspectorServer {
         var config = Realm.Configuration.defaultConfiguration
         config.fileURL = url
         let realm = try Realm(configuration: config)
-        return InspectorServer(realm: realm, port: port)
+        return InspectorServer(
+            realm: realm,
+            networkPort: networkPort,
+            usbPort: usbPort,
+            transportMode: transportMode
+        )
     }
 }

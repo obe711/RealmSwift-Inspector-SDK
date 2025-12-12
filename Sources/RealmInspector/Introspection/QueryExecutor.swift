@@ -234,6 +234,7 @@ extension QueryExecutor {
     // MARK: - Private Mutation Helpers
     
     private func findObject(typeName: String, primaryKey: Any) throws -> DynamicObject? {
+
         if let stringKey = primaryKey as? String {
             // Could be a string key or ObjectId string
             if let objectId = try? ObjectId(string: stringKey) {
