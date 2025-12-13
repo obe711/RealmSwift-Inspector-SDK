@@ -216,9 +216,9 @@ extension DocumentNode {
     public static func fromDocument(_ document: [String: Any]) -> [DocumentNode] {
         // Sort keys, but put _id first if present
         var sortedKeys = document.keys.sorted()
-        if let idIndex = sortedKeys.firstIndex(of: "_id") {
+        if let idIndex = sortedKeys.firstIndex(of: "id") {
             sortedKeys.remove(at: idIndex)
-            sortedKeys.insert("_id", at: 0)
+            sortedKeys.insert("id", at: 0)
         }
         
         return sortedKeys.map { key in

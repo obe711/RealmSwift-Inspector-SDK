@@ -27,7 +27,6 @@ public final class RequestHandler {
     
     /// Handle a request and return a response
     public func handle(_ request: InspectorRequest, completion: @escaping (InspectorResponse) -> Void) {
-        Logger.log("📨 Received request - ID: \(request.id), Type: \(request.type)")
         if let params = request.params {
             let paramsSummary = params.map { "\($0.key)=\(String(describing: $0.value.value))" }.joined(separator: ", ")
             Logger.log("   Parameters: \(paramsSummary)")
@@ -37,24 +36,21 @@ public final class RequestHandler {
 
         realmQueue.async { [weak self] in
             guard let self = self else {
-                Logger.log("❌ Handler deallocated for request \(request.id)")
                 completion(.failure(id: request.id, error: "Handler deallocated"))
                 return
             }
 
-            Logger.log("⚙️  Processing request \(request.id) on realmQueue")
 
             DispatchQueue.main.async {
                 let response = self.processRequest(request)
                 let duration = Date().timeIntervalSince(startTime)
 
                 if response.success {
-                    Logger.log("✅ Request \(response.id) succeeded in \(String(format: "%.3f", duration))s")
                     if let data = response.data {
                         Logger.log("   Response data type: \(type(of: data.value))")
                     }
                 } else {
-                    Logger.log("❌ Request \(response.id) failed in \(String(format: "%.3f", duration))s - Error: \(response.error ?? "unknown")")
+                    Logger.log("--- Request \(response.id) failed in \(String(format: "%.3f", duration))s - Error: \(response.error ?? "unknown")")
                 }
 
                 completion(response)
@@ -138,9 +134,9 @@ public final class RequestHandler {
     }
 
     private func executeGetRealmInfo() throws -> AnyCodable {
-        Logger.log("ℹ️  Getting Realm info")
+        
         let info = schemaExtractor.getRealmInfo()
-        Logger.log("📊 Realm info - Path: \(info.path), Version: \(info.schemaVersion), Objects: \(info.objectCount), InMemory: \(info.isInMemory)")
+       
         return AnyCodable([
             "path": info.path,
             "schemaVersion": info.schemaVersion,
@@ -152,9 +148,9 @@ public final class RequestHandler {
     }
     
     private func executeListSchemas() throws -> AnyCodable {
-        Logger.log("📋 Listing all schemas")
+     
         let schemas = schemaExtractor.getAllSchemas()
-        Logger.log("📊 Found \(schemas.count) schemas: \(schemas.map { $0.name }.joined(separator: ", "))")
+       
         let schemaData = schemas.map { schema -> [String: Any] in
             [
                 "name": schema.name,
@@ -169,18 +165,13 @@ public final class RequestHandler {
     
     private func executeGetSchema(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let typeName = params?["typeName"]?.value as? String else {
-            Logger.log("❌ Missing typeName parameter for getSchema")
             throw RequestError.missingParameter("typeName")
         }
 
-        Logger.log("📄 Getting schema for type: \(typeName)")
 
         guard let schema = schemaExtractor.getSchema(forTypeName: typeName) else {
-            Logger.log("❌ Schema not found: \(typeName)")
             throw RequestError.notFound("Schema '\(typeName)' not found")
         }
-
-        Logger.log("✅ Schema found - Type: \(typeName), Properties: \(schema.properties.count), PrimaryKey: \(schema.primaryKey ?? "none")")
 
         let propertyData = schema.properties.map { prop -> [String: Any] in
             [
@@ -203,11 +194,9 @@ public final class RequestHandler {
     
     private func executeQueryDocuments(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let queryParams = QueryParams.from(params: params) else {
-            Logger.log("❌ Missing typeName parameter for queryDocuments")
             throw RequestError.missingParameter("typeName")
         }
-
-        Logger.log("🔍 Querying documents - Type: \(queryParams.typeName), Skip: \(queryParams.skip), Limit: \(queryParams.limit)")
+        
         if let filter = queryParams.filter {
             Logger.log("   Filter: \(filter)")
         }
@@ -216,8 +205,6 @@ public final class RequestHandler {
         }
 
         let result = try queryExecutor.execute(queryParams)
-
-        Logger.log("📊 Query results - Found: \(result.documents.count), Total: \(result.totalCount), HasMore: \(result.hasMore)")
 
         return AnyCodable([
             "documents": result.documents.map { $0.mapValues { $0.value } },
@@ -230,102 +217,85 @@ public final class RequestHandler {
     
     private func executeGetDocument(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let typeName = params?["typeName"]?.value as? String else {
-            Logger.log("❌ Missing typeName parameter for getDocument")
             throw RequestError.missingParameter("typeName")
         }
 
         guard let primaryKeyValue = params?["primaryKey"]?.value else {
-            Logger.log("❌ Missing primaryKey parameter for getDocument")
             throw RequestError.missingParameter("primaryKey")
         }
 
         // Extract the actual primary key value from structured representations
         let primaryKey = extractPrimaryKey(from: primaryKeyValue)
 
-        Logger.log("📄 Getting document - Type: \(typeName), PrimaryKey: \(primaryKey)")
 
         guard let document = try queryExecutor.getDocument(typeName: typeName, primaryKey: primaryKey) else {
-            Logger.log("❌ Document not found - Type: \(typeName), PrimaryKey: \(primaryKey)")
             throw RequestError.notFound("Document not found")
         }
 
-        Logger.log("✅ Document retrieved - Type: \(typeName), Properties: \(document.keys.count)")
 
         return AnyCodable(document)
     }
     
     private func executeCountDocuments(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let typeName = params?["typeName"]?.value as? String else {
-            Logger.log("❌ Missing typeName parameter for countDocuments")
             throw RequestError.missingParameter("typeName")
         }
 
         let filter = params?["filter"]?.value as? String
-        Logger.log("🔢 Counting documents - Type: \(typeName)\(filter.map { ", Filter: \($0)" } ?? "")")
 
         let count = try queryExecutor.count(typeName: typeName, filter: filter)
 
-        Logger.log("📊 Count result - Type: \(typeName), Count: \(count)")
 
         return AnyCodable(["count": count])
     }
     
     private func executeCreateDocument(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let typeName = params?["typeName"]?.value as? String else {
-            Logger.log("❌ Missing typeName parameter for createDocument")
             throw RequestError.missingParameter("typeName")
         }
 
         guard let data = params?["data"]?.value as? [String: Any] else {
-            Logger.log("❌ Missing data parameter for createDocument")
             throw RequestError.missingParameter("data")
         }
 
-        Logger.log("➕ Creating document - Type: \(typeName), Fields: \(data.keys.joined(separator: ", "))")
-
         let document = try queryExecutor.createDocument(typeName: typeName, data: data)
-
-        Logger.log("✅ Document created - Type: \(typeName)")
 
         return AnyCodable(document)
     }
     
     private func executeUpdateDocument(_ params: [String: AnyCodable]?) throws -> AnyCodable {
+        Logger.log("executeUpdateDocument executeUpdateDocument executeUpdateDocument")
         guard let typeName = params?["typeName"]?.value as? String else {
-            Logger.log("❌ Missing typeName parameter for updateDocument")
+           
             throw RequestError.missingParameter("typeName")
         }
 
         guard let primaryKeyValue = params?["primaryKey"]?.value else {
-            Logger.log("❌ Missing primaryKey parameter for updateDocument")
+           
             throw RequestError.missingParameter("primaryKey")
         }
 
-        guard let changes = params?["changes"]?.value as? [String: Any] else {
-            Logger.log("❌ Missing changes parameter for updateDocument")
-            throw RequestError.missingParameter("changes")
+        guard let changes = params?["data"]?.value as? [String: Any] else {
+           
+            throw RequestError.missingParameter("data")
         }
 
         // Extract the actual primary key value from structured representations
         let primaryKey = extractPrimaryKey(from: primaryKeyValue)
 
-        Logger.log("✏️  Updating document - Type: \(typeName), PrimaryKey: \(primaryKey), Changing fields: \(changes.keys.joined(separator: ", "))")
-
         let document = try queryExecutor.updateDocument(typeName: typeName, primaryKey: primaryKey, changes: changes)
-
-        Logger.log("✅ Document updated - Type: \(typeName), PrimaryKey: \(primaryKey)")
 
         return AnyCodable(document)
     }
     
     private func executeDeleteDocument(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let typeName = params?["typeName"]?.value as? String else {
-            Logger.log("❌ Missing typeName parameter for deleteDocument")
+          
             throw RequestError.missingParameter("typeName")
         }
 
         guard let primaryKeyValue = params?["primaryKey"]?.value else {
-            Logger.log("❌ Missing primaryKey parameter for deleteDocument")
+           
             throw RequestError.missingParameter("primaryKey")
         }
 
@@ -337,9 +307,9 @@ public final class RequestHandler {
         let deleted = try queryExecutor.deleteDocument(typeName: typeName, primaryKey: primaryKey)
 
         if deleted {
-            Logger.log("✅ Document deleted - Type: \(typeName), PrimaryKey: \(primaryKey)")
+            Logger.log("Document deleted - Type: \(typeName), PrimaryKey: \(primaryKey)")
         } else {
-            Logger.log("⚠️  Document not found for deletion - Type: \(typeName), PrimaryKey: \(primaryKey)")
+            Logger.log("--- Document not found for deletion - Type: \(typeName), PrimaryKey: \(primaryKey)")
         }
 
         return AnyCodable(["deleted": deleted])
@@ -347,7 +317,7 @@ public final class RequestHandler {
     
     private func executeSubscribe(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let typeName = params?["typeName"]?.value as? String else {
-            Logger.log("❌ Missing typeName parameter for subscribe")
+           
             throw RequestError.missingParameter("typeName")
         }
 
@@ -355,8 +325,7 @@ public final class RequestHandler {
         let subscriptionId = UUID().uuidString
 
         let filter = params?["filter"]?.value as? String
-        Logger.log("🔔 Creating subscription - ID: \(subscriptionId), Type: \(typeName)\(filter.map { ", Filter: \($0)" } ?? "")")
-
+        
         // The actual subscription setup will be handled by the InspectorServer
         // This just validates and returns the subscription ID
 
@@ -369,11 +338,9 @@ public final class RequestHandler {
     
     private func executeUnsubscribe(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let subscriptionId = params?["subscriptionId"]?.value as? String else {
-            Logger.log("❌ Missing subscriptionId parameter for unsubscribe")
+          
             throw RequestError.missingParameter("subscriptionId")
         }
-
-        Logger.log("🔕 Unsubscribing - ID: \(subscriptionId)")
 
         // The actual unsubscribe will be handled by the InspectorServer
         return AnyCodable(["unsubscribed": subscriptionId])

@@ -107,13 +107,7 @@ public final class ObjectSerializer {
                 return decimal.stringValue
             }
             return NSNull()
-            
-//        case .uuid:
-//            if let uuid = object[property.name] as? UUID {
-//                return uuid.uuidString
-//            }
-//            return NSNull()
-            
+                        
         case .object:
             // Check if this is a collection (List, Set, Map) or a single object
             if property.isArray {

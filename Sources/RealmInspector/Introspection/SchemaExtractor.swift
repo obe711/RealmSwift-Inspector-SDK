@@ -84,8 +84,6 @@ public final class SchemaExtractor {
             return "ObjectId"
         case .decimal128:
             return "Decimal128"
-//        case .uuid:
-//            return "UUID"
         case .any:
             return "AnyRealmValue"
         case .linkingObjects:

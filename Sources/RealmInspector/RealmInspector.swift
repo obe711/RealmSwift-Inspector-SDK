@@ -72,7 +72,7 @@ public final class RealmInspector {
     private init() {
         // Check if we should auto-disable in release builds
         #if !DEBUG
-        Logger.log("⚠️ RealmInspector should only be used in DEBUG builds")
+        Logger.log("RealmInspector should only be used in DEBUG builds")
         #endif
     }
     
@@ -185,12 +185,12 @@ public final class RealmInspector {
             setupServerCallbacks()
             try server?.start()
             
-            Logger.log("✅ RealmInspector started (mode: \(transportMode))")
+            Logger.log("RealmInspector started (mode: \(transportMode))")
             printConnectionInfo()
             
             return true
         } catch {
-            Logger.log("❌ Failed to start RealmInspector: \(error)")
+            Logger.log("--- Failed to start RealmInspector: \(error)")
             onError?(error)
             return false
         }
@@ -265,12 +265,12 @@ public final class RealmInspector {
         }
         
         server?.onClientConnect = { [weak self] clientId in
-            Logger.log("📱 Client connected: \(clientId)")
+            Logger.log("Client connected: \(clientId)")
             self?.onClientConnect?(clientId)
         }
         
         server?.onClientDisconnect = { [weak self] clientId in
-            Logger.log("📱 Client disconnected: \(clientId)")
+            Logger.log("Client disconnected: \(clientId)")
             self?.onClientDisconnect?(clientId)
         }
         
@@ -282,22 +282,22 @@ public final class RealmInspector {
     private func printConnectionInfo() {
         #if os(iOS)
         if let deviceName = UIDevice.current.name.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) {
-            Logger.log("📡 Device: \(deviceName)")
+            Logger.log("Device: \(deviceName)")
         }
         #endif
         
-        Logger.log("📡 Transport Mode: \(transportMode)")
+        Logger.log("Transport Mode: \(transportMode)")
         
         if transportMode == .networkOnly || transportMode == .both {
-            Logger.log("📡 Network Service: \(BonjourAdvertiser.serviceType)")
-            Logger.log("📡 Network Port: \(networkPort)")
+            Logger.log("Network Service: \(BonjourAdvertiser.serviceType)")
+            Logger.log("Network Port: \(networkPort)")
         }
         
         if transportMode == .usbOnly || transportMode == .both {
-            Logger.log("🔌 USB Port: \(usbPort)")
+            Logger.log("USB Port: \(usbPort)")
         }
         
-        Logger.log("📡 Ready for connections from RealmCompass desktop app")
+        Logger.log("Ready for connections from RealmCompass desktop app")
     }
 }
 

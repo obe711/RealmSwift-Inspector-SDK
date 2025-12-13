@@ -212,7 +212,7 @@
          
          // Log connection events
          RealmInspector.shared.onClientConnect = { _ in
-             print("📱 RealmCompass connected - you can now inspect Iris's database!")
+             print("RealmCompass connected - you can now inspect Iris's database!")
          }
      }
      #endif
