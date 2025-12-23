@@ -101,7 +101,13 @@ public final class RequestHandler {
             
         case .deleteDocument:
             return try executeDeleteDocument(request.params)
-            
+
+        case .deleteAllInCollection:
+            return try executeDeleteAllInCollection(request.params)
+
+        case .deleteAllInDatabase:
+            return try executeDeleteAllInDatabase(request.params)
+
         case .subscribe:
             return try executeSubscribe(request.params)
             
@@ -314,7 +320,35 @@ public final class RequestHandler {
 
         return AnyCodable(["deleted": deleted])
     }
-    
+
+    private func executeDeleteAllInCollection(_ params: [String: AnyCodable]?) throws -> AnyCodable {
+        guard let typeName = params?["typeName"]?.value as? String else {
+            throw RequestError.missingParameter("typeName")
+        }
+
+        Logger.log("🗑️  Deleting all documents in collection - Type: \(typeName)")
+
+        let deletedCount = try queryExecutor.deleteAllInCollection(typeName: typeName)
+
+        Logger.log("Deleted \(deletedCount) documents from collection - Type: \(typeName)")
+
+        return AnyCodable(["deletedCount": deletedCount])
+    }
+
+    private func executeDeleteAllInDatabase(_ params: [String: AnyCodable]?) throws -> AnyCodable {
+        Logger.log("🗑️  Deleting all documents in entire database")
+
+        let result = try queryExecutor.deleteAllInDatabase()
+
+        Logger.log("Deleted all documents from database - Total collections: \(result.collectionsCleared), Total documents: \(result.totalDeleted)")
+
+        return AnyCodable([
+            "collectionsCleared": result.collectionsCleared,
+            "totalDeleted": result.totalDeleted,
+            "collections": result.collections
+        ])
+    }
+
     private func executeSubscribe(_ params: [String: AnyCodable]?) throws -> AnyCodable {
         guard let typeName = params?["typeName"]?.value as? String else {
            

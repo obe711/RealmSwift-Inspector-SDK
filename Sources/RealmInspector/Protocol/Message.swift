@@ -17,7 +17,9 @@ public enum RequestType: String, Codable, CaseIterable {
     case createDocument
     case updateDocument
     case deleteDocument
-    
+    case deleteAllInCollection
+    case deleteAllInDatabase
+
     // Subscription operations
     case subscribe
     case unsubscribe

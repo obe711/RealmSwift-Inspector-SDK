@@ -223,14 +223,62 @@ extension QueryExecutor {
         guard let object = try findObject(typeName: typeName, primaryKey: primaryKey) else {
             throw MutationError.documentNotFound
         }
-        
+
         try realm.write {
             realm.delete(object)
         }
-        
+
         return true
     }
-    
+
+    /// Delete all documents in a specific collection
+    public func deleteAllInCollection(typeName: String) throws -> Int {
+        guard realm.schema.objectSchema.contains(where: { $0.className == typeName }) else {
+            throw QueryError.unknownType(typeName)
+        }
+
+        let objects = realm.dynamicObjects(typeName)
+        let count = objects.count
+
+        try realm.write {
+            realm.delete(objects)
+        }
+
+        return count
+    }
+
+    /// Delete all documents in the entire database
+    public func deleteAllInDatabase() throws -> DeleteAllResult {
+        var collectionsCleared = 0
+        var totalDeleted = 0
+        var collections: [[String: Any]] = []
+
+        try realm.write {
+            for objectSchema in realm.schema.objectSchema {
+                let typeName = objectSchema.className
+                let objects = realm.dynamicObjects(typeName)
+                let count = objects.count
+
+                if count > 0 {
+                    realm.delete(objects)
+                    collectionsCleared += 1
+                    totalDeleted += count
+
+                    collections.append([
+                        "typeName": typeName,
+                        "deletedCount": count
+                    ])
+                }
+            }
+        }
+
+        return DeleteAllResult(
+            collectionsCleared: collectionsCleared,
+            totalDeleted: totalDeleted,
+            collections: collections
+        )
+    }
+
     // MARK: - Private Mutation Helpers
     
     private func findObject(typeName: String, primaryKey: Any) throws -> DynamicObject? {
@@ -256,7 +304,7 @@ public enum MutationError: Error, LocalizedError {
     case documentAlreadyExists
     case readOnlyRealm
     case writeFailed(Error)
-    
+
     public var errorDescription: String? {
         switch self {
         case .documentNotFound:
@@ -268,5 +316,20 @@ public enum MutationError: Error, LocalizedError {
         case .writeFailed(let error):
             return "Write failed: \(error.localizedDescription)"
         }
+    }
+}
+
+// MARK: - Delete All Result
+
+/// Result of deleting all documents in the database
+public struct DeleteAllResult {
+    public let collectionsCleared: Int
+    public let totalDeleted: Int
+    public let collections: [[String: Any]]
+
+    public init(collectionsCleared: Int, totalDeleted: Int, collections: [[String: Any]]) {
+        self.collectionsCleared = collectionsCleared
+        self.totalDeleted = totalDeleted
+        self.collections = collections
     }
 }
